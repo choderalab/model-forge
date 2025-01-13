@@ -867,6 +867,7 @@ class DataModule(pl.LightningDataModule):
         regenerate_cache: bool = False,
         regenerate_dataset_statistic: bool = False,
         regenerate_processed_cache: bool = True,
+        element_filter: Optional[List[tuple]] = None,
         properties_of_interest: Optional[PropertyNames] = None,
         properties_assignment: Optional[Dict[str, str]] = None,
     ):
@@ -934,6 +935,7 @@ class DataModule(pl.LightningDataModule):
         self.val_dataset: Optional[TorchDataset] = None
         self.test_dataset: Optional[TorchDataset] = None
 
+        self.element_filter = element_filter
         self.properties_of_interest = properties_of_interest
         self.properties_assignment = properties_assignment
 
@@ -1004,6 +1006,8 @@ class DataModule(pl.LightningDataModule):
 
             dataset._properties_names = PropertyNames(**self.properties_assignment)
 
+        self._create_torch_dataset(dataset)    # init dataset.numpy_data
+        dataset = self._filter_by_element(dataset)
         torch_dataset = self._create_torch_dataset(dataset)
         # if dataset statistics is present load it from disk
         if (
@@ -1057,6 +1061,68 @@ class DataModule(pl.LightningDataModule):
 
         # Save processed dataset and statistics for later use in setup
         self._cache_dataset(torch_dataset)
+
+    def _filter_by_element(self, dataset):
+        """
+        Filter dataset with or without certain elements.
+        The element filter is a list containing tuples with numerous element atomic numbers:
+            [($atomic_number_1, $atomic_number_2), (-$atomic_number_3,)]
+        The upper example will filter all systems satisfying:
+            containing ($atomic_number_1 AND $atomic_number_2) OR not containing ($atomic_number_3)
+        Note that anything inside a tuple will be AND-related; anything in different tuples are OR-related; any atomic
+        number less than zero means filtering systems without the element with the atomic number of its absolute value.
+
+        Parameters
+        ----------
+        dataset: HDF5Dataset
+            One of the supported dataset child classes of HDF5Dataset.
+
+        Returns
+        -------
+        HDF5Dataset
+        """
+        dataset_ref = dataset
+        dataset.numpy_data = dict(dataset.numpy_data)
+
+        cumulative_atomic_subsystem_counts = np.cumsum(dataset.numpy_data["atomic_subsystem_counts"])
+        system_indices = set()  # final indices for systems to be selected
+        for each_filter in self.element_filter:
+            sorted_filter = list(each_filter)
+            sorted_filter.sort(reverse=True)    # exclusions happen later than inclusions
+            system_indices_in_each_filter = set()  # indices for systems to be selected in each filter
+            for each_element in sorted_filter:
+                if each_element > 0:    # include systems with this element
+                    atom_indices = np.where(dataset.numpy_data["atomic_numbers"] == each_element)[0]
+
+                    for each_atom in atom_indices:
+                        system_index = np.where(cumulative_atomic_subsystem_counts - each_atom > 0)[0][0]
+                        system_indices_in_each_filter.add(system_index)
+
+                else:   # exclude systems without this element
+                    atom_indices = np.where(dataset.numpy_data["atomic_numbers"] == -each_element)[0]
+                    for each_atom in atom_indices:
+                        system_index = np.where(cumulative_atomic_subsystem_counts - each_atom > 0)[0][0]
+                        system_indices_in_each_filter.discard(system_index)
+
+            system_indices.update(system_indices_in_each_filter)
+
+        # select from dataset
+        system_indices = sorted(list(system_indices))
+        dataset.numpy_data["atomic_subsystem_counts"] = dataset_ref.numpy_data["atomic_subsystem_counts"][system_indices]
+        dataset.numpy_data["n_confs"] = dataset_ref.numpy_data["n_confs"][system_indices]
+        dataset.numpy_data["total_energy"] = dataset_ref.numpy_data["total_energy"][system_indices]
+        dataset.numpy_data["dipole_moment_computed"] = dataset_ref.numpy_data["dipole_moment_computed"][system_indices]
+        dataset.numpy_data["total_charge"] = dataset_ref.numpy_data["total_charge"][system_indices]
+
+        dataset.numpy_data["atomic_numbers"] = np.array([])
+        dataset.numpy_data["geometry"] = np.array([])
+        for system_index in system_indices:
+            start = cumulative_atomic_subsystem_counts[system_index - 1]
+            stop = cumulative_atomic_subsystem_counts[system_index]
+            np.append(dataset.numpy_data["atomic_numbers"], dataset_ref.numpy_data["atomic_numbers"][start:stop])
+            np.append(dataset.numpy_data["geometry"], dataset_ref.numpy_data["geometry"][start:stop])
+
+        return dataset
 
     def _log_dataset_statistic(self, dataset_statistic):
         """Save the dataset statistics to a file with units"""
@@ -1440,6 +1506,7 @@ def initialize_datamodule(
     regression_ase: bool = False,
     regenerate_dataset_statistic: bool = False,
     local_cache_dir="./",
+    element_filter: Optional[List[tuple]] = None,
     properties_of_interest: Optional[PropertyNames] = None,
     properties_assignment: Optional[Dict[str, str]] = None,
 ) -> DataModule:
@@ -1457,6 +1524,7 @@ def initialize_datamodule(
         regression_ase=regression_ase,
         regenerate_dataset_statistic=regenerate_dataset_statistic,
         local_cache_dir=local_cache_dir,
+        element_filter=element_filter,
         properties_of_interest=properties_of_interest,
         properties_assignment=properties_assignment,
     )

@@ -1,5 +1,17 @@
-from modelforge.curate.curate import *
+from modelforge.curate import Record, SourceDataset
 from modelforge.curate.datasets.curation_baseclass import DatasetCuration
+from modelforge.curate.properties import (
+    AtomicNumbers,
+    Positions,
+    Energies,
+    Forces,
+    PartialCharges,
+    TotalCharge,
+    MetaData,
+    DipoleMomentScalarPerSystem,
+    SpinMultiplicities,
+)
+
 from modelforge.utils.units import chem_context
 import numpy as np
 
@@ -318,7 +330,7 @@ class tmQMCuration(DatasetCuration):
                         units=unit.hartree,
                     )
 
-                    dipole_moment_magnitude = DipoleMomentScalar(
+                    dipole_moment_magnitude = DipoleMomentScalarPerSystem(
                         name="dipole_moment_magnitude",
                         value=np.array(float(temp_dict["Dipole_M"])).reshape(1, 1),
                         units=unit.debye,
@@ -336,14 +348,14 @@ class tmQMCuration(DatasetCuration):
 
                     record_temp = dataset.get_record(record_name)
 
-                    dipole_moment_computed_scaled = self._compute_dipole_moment(
+                    dipole_moment_computed_scaled = self.compute_dipole_moment(
                         atomic_numbers=record_temp.atomic_numbers,
                         partial_charges=record_temp.per_atom["partial_charges"],
                         positions=record_temp.per_atom["positions"],
                         dipole_moment_scalar=dipole_moment_magnitude,
                     )
                     dipole_moment_computed_scaled.name = "dipole_moment_computed_scaled"
-                    dipole_moment_computed = self._compute_dipole_moment(
+                    dipole_moment_computed = self.compute_dipole_moment(
                         atomic_numbers=record_temp.atomic_numbers,
                         partial_charges=record_temp.per_atom["partial_charges"],
                         positions=record_temp.per_atom["positions"],
@@ -515,7 +527,7 @@ class tmQMCuration(DatasetCuration):
             csv_file,
         )
 
-        # generate the hdf5 file
-        self.dataset.to_hdf5(
-            file_path=self.output_file_dir, file_name=self.hdf5_file_name
+        logger.info(f"writing file {self.hdf5_file_name} to {self.output_file_dir}")
+        self.write_hdf5_and_json_files(
+            file_name=self.hdf5_file_name, file_path=self.output_file_dir
         )

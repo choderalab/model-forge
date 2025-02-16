@@ -1,14 +1,16 @@
 from abc import ABC, abstractmethod
 
 from typing import Dict, List, Optional
+
+import numpy as np
 from loguru import logger
 from openff.units import unit
-from modelforge.curate.curate import (
+from modelforge.curate.properties import (
     AtomicNumbers,
     PartialCharges,
     Positions,
-    DipoleMoment,
-    DipoleMomentScalar,
+    DipoleMomentPerSystem,
+    DipoleMomentScalarPerSystem,
 )
 
 
@@ -51,6 +53,13 @@ class DatasetCuration(ABC):
         # initialize parameter information
         self._init_dataset_parameters()
 
+    @abstractmethod
+    def _init_dataset_parameters(self):
+        """
+        Initialize the dataset parameters.
+        """
+        pass
+
     def total_records(self):
         """
         Returns the total number of records in the dataset.
@@ -73,15 +82,53 @@ class DatasetCuration(ABC):
         """
         return self.dataset.total_configs()
 
-    def _compute_dipole_moment(
+    def _calc_center_of_mass(
+        self, atomic_numbers: np.ndarray, positions: np.ndarray
+    ) -> np.ndarray:
+        """
+        Compute the center of mass of a system
+
+        parameters
+        ----------
+        atomic_numbers: np.ndarray, required
+            atomic numbers of the atoms in the system
+        positions: np.ndarray, required
+            positions of the atoms in the system
+
+        Returns
+        -------
+        np.ndarray
+            center of mass of the system
+        """
+
+        from openff.units.elements import MASSES
+        from openff.units import unit
+        import numpy as np
+
+        atomic_masses = np.array(
+            [
+                MASSES[atomic_number].m
+                for atomic_number in atomic_numbers.reshape(-1).tolist()
+            ]
+        )
+
+        center_of_mass = np.einsum(
+            "i,ij->j",
+            atomic_masses,
+            positions / np.sum(atomic_masses),
+        )
+        return center_of_mass
+
+    def compute_dipole_moment(
         self,
         atomic_numbers: AtomicNumbers,
         partial_charges: PartialCharges,
         positions: Positions,
-        dipole_moment_scalar: Optional[DipoleMomentScalar] = None,
-    ) -> DipoleMoment:
+        dipole_moment_scalar: Optional[DipoleMomentScalarPerSystem] = None,
+    ) -> DipoleMomentPerSystem:
         """
-        Compute the dipole moment from the atomic numbers, partial charges, and positions, rescaling to give the same magnitude to match the
+        Compute the per-system  dipole moment from the atomic numbers, partial charges, and positions,
+        rescaling to give the same magnitude to match the
         magnitude of the dipole moment (i.e., scalar) if provided.
 
         Parameters
@@ -92,32 +139,35 @@ class DatasetCuration(ABC):
             partial charges of the atoms in the system
         positions: Positions
             positions of the atoms in the system
-        dipole_moment_scalar: Optional[DipoleMomentScalar]
+        dipole_moment_scalar: Optional[DipoleMomentScalarPerSystem], optional, default=None
             scalar dipole moment to rescale the computed dipole moment
 
         Returns
         -------
-            DipoleMoment
-                computed dipole moment
+            DipoleMomentPerSystem
+                computed per system dipole moment
         """
-        from openff.units.elements import MASSES
+        # from openff.units.elements import MASSES
         from openff.units import unit
         import numpy as np
 
-        atomic_masses = np.array(
-            [
-                MASSES[atomic_number].m
-                for atomic_number in atomic_numbers.value.reshape(-1).tolist()
-            ]
-        )
+        # atomic_masses = np.array(
+        #     [
+        #         MASSES[atomic_number].m
+        #         for atomic_number in atomic_numbers.value.reshape(-1).tolist()
+        #     ]
+        # )
 
         dipole_moment_list = []
-        # compute the center of mas
+        # compute the center of mass
         for config in range(positions.value.shape[0]):
-            center_of_mass = np.einsum(
-                "i,ij->j",
-                atomic_masses,
-                positions.value[config] / np.sum(atomic_masses),
+            # center_of_mass = np.einsum(
+            #     "i,ij->j",
+            #     atomic_masses,
+            #     positions.value[config] / np.sum(atomic_masses),
+            # )
+            center_of_mass = self._calc_center_of_mass(
+                atomic_numbers.value[config], positions.value[config]
             )
             pos = positions.value[config] - center_of_mass
 
@@ -142,7 +192,24 @@ class DatasetCuration(ABC):
 
             dipole_moment_list.append(dm_temp)
 
-        return DipoleMoment(
+        return DipoleMomentPerSystem(
             value=np.array(dipole_moment_list).reshape(-1, 3),
             units=positions.units * unit.elementary_charge,
+        )
+
+    def write_hdf5_and_json_files(self, file_name: str, file_path: str):
+        """
+        Write the dataset to an hdf5 file and a json file.
+        """
+        # save out the dataset to hdf5
+        checksum = self.dataset.to_hdf5(file_name=file_name, file_path=file_path)
+        # chop off .hdf5 extension and add .json
+        json_file_name = file_name.replace(".hdf5", ".json")
+
+        # save a summary to json
+        self.dataset.summary_to_json(
+            file_path=file_path,
+            file_name=json_file_name,
+            hdf5_checksum=checksum,
+            hdf5_file_name=file_name,
         )
